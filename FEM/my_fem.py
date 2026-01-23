@@ -11,53 +11,38 @@ def _compute_element_forces_numba(p0, p1, p2, x_inv, volume, young_modulus, pois
     if volume == 0.0:
         return forces
 
-    # 1. Gradient deformacji F = [p1-p0, p2-p0] * X_inv
+    # Gradient deformacji F = [p1-p0, p2-p0] * X_inv
     f00 = (p1[0] - p0[0]) * x_inv[0, 0] + (p2[0] - p0[0]) * x_inv[1, 0]
     f01 = (p1[0] - p0[0]) * x_inv[0, 1] + (p2[0] - p0[0]) * x_inv[1, 1]
     f10 = (p1[1] - p0[1]) * x_inv[0, 0] + (p2[1] - p0[1]) * x_inv[1, 0]
     f11 = (p1[1] - p0[1]) * x_inv[0, 1] + (p2[1] - p0[1]) * x_inv[1, 1]
 
-    # Parametry Lame (Plane Stress)
+    # Parametry Lame
     mu = young_modulus / (2.0 * (1.0 + poisson_ratio))
     lmbda = (young_modulus * poisson_ratio) / (1.0 - poisson_ratio**2)
 
-    if use_cauchy:
-        # Model liniowy (tylko małe odkształcenia/obroty)
-        e00 = f00 - 1.0
-        e11 = f11 - 1.0
-        e01 = 0.5 * (f01 + f10)
+    
+    # Model nieliniowy
+    # Tensor odkształcenia Greena-Lagrange E = 0.5 * (F^T * F - I)
+    c00 = f00*f00 + f10*f10
+    c01 = f00*f01 + f10*f11
+    c11 = f01*f01 + f11*f11
         
-        # Naprężenie (uproszczone)
-        trace = e00 + e11
-        s00 = lmbda * trace + 2.0 * mu * e00
-        s11 = lmbda * trace + 2.0 * mu * e11
-        s01 = 2.0 * mu * e01
+    e00 = 0.5 * (c00 - 1.0)
+    e11 = 0.5 * (c11 - 1.0)
+    e01 = 0.5 * c01
         
-        # W modelu liniowym P = S
-        p_stress00, p_stress01 = s00, s01
-        p_stress10, p_stress11 = s01, s11
-    else:
-        # Model nieliniowy (Saint Venant-Kirchhoff) - KLUCZ DO ROTACJI
-        # Tensor odkształcenia Greena-Lagrange'a E = 0.5 * (F^T * F - I)
-        c00 = f00*f00 + f10*f10
-        c01 = f00*f01 + f10*f11
-        c11 = f01*f01 + f11*f11
+    # Drugi tensor naprężenia Pioli-Kirchhoffa S
+    trace = e00 + e11
+    s00 = lmbda * trace + 2.0 * mu * e00
+    s11 = lmbda * trace + 2.0 * mu * e11
+    s01 = 2.0 * mu * e01
         
-        e00 = 0.5 * (c00 - 1.0)
-        e11 = 0.5 * (c11 - 1.0)
-        e01 = 0.5 * c01
-        
-        # Drugi tensor naprężenia Pioli-Kirchhoffa S
-        trace = e00 + e11
-        s00 = lmbda * trace + 2.0 * mu * e00
-        s11 = lmbda * trace + 2.0 * mu * e11
-        s01 = 2.0 * mu * e01
-        
-        # Pierwszy tensor naprężenia Pioli-Kirchhoffa P = F * S (Mapowanie sił na świat)
-        p_stress00 = f00 * s00 + f01 * s01
-        p_stress01 = f00 * s01 + f01 * s11
-        p_stress10 = f10 * s00 + f11 * s01
-        p_stress11 = f10 * s01 + f11 * s11
+    # Pierwszy tensor naprężenia Pioli-Kirchhoffa P = F * S (Mapowanie sił na świat)
+    p_stress00 = f00 * s00 + f01 * s01
+    p_stress01 = f00 * s01 + f01 * s11
+    p_stress10 = f10 * s00 + f11 * s01
+    p_stress11 = f10 * s01 + f11 * s11
 
     # Gradienty funkcji kształtu
     g1x, g1y = x_inv[0, 0], x_inv[0, 1]
@@ -83,7 +68,7 @@ def _assemble_forces_numba(positions, tri_indices, tri_x_inv, tri_volumes, masse
     for i in range(n):
         f_global[i, 1] -= masses[i] * gravity
 
-    # Siły wewnętrzne elementów
+    # Sily wewnetrzne elementow
     for t in range(tri_indices.shape[0]):
         idx = tri_indices[t]
         fe = _compute_element_forces_numba(
@@ -105,22 +90,22 @@ def _integrate_particles_numba(positions, velocities, masses, fixed_mask, forces
             continue
 
         inv_m = 1.0 / masses[i]
-        # Krok 1: Prędkość (Semi-implicit)
+        # Predkosc (Semi-implicit)
         velocities[i, 0] = (velocities[i, 0] + forces[i, 0] * inv_m * dt) * damping
         velocities[i, 1] = (velocities[i, 1] + forces[i, 1] * inv_m * dt) * damping
         
-        # Krok 2: Pozycja
+        # Pozycja
         positions[i, 0] += velocities[i, 0] * dt
         positions[i, 1] += velocities[i, 1] * dt
 
-        # Kolizja z podłożem
+        # Kolizja z podloga
         if positions[i, 1] < ground_y:
             positions[i, 1] = ground_y
             velocities[i, 1] *= -bounce
             velocities[i, 0] *= 0.9  # Tarcie
 
 class FEMSoftBody:
-    def __init__(self, young_modulus=30000, poisson_ratio=0.15, gravity=5):
+    def __init__(self, young_modulus=10000, poisson_ratio=0.15, gravity=5):
         self.E = young_modulus
         self.nu = poisson_ratio
         self.gravity = gravity
@@ -167,7 +152,7 @@ class FEMSoftBody:
                                    self.tri_vol, self.masses, self.gravity, 
                                    self.E, self.nu, False)
         
-        # Początkowy impuls rotacyjny (przez pierwsze 0.1s)
+        # Początkowy impuls rotacyjny
         if self.time < 0.1:
             center = np.mean(self.positions, axis=0)
             for i in range(len(self.positions)):
